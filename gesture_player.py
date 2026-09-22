@@ -4,7 +4,10 @@ import numpy as np
 import joblib
 import time
 import vlc
+import math
+
 from collections import deque
+from pycaw.pycaw import AudioUtilities
 
 
 # ============================================================
@@ -18,11 +21,20 @@ model = joblib.load("models/gesture_model.pkl")
 # VLC SETUP
 # ============================================================
 
-player = vlc.MediaPlayer("video.mp4")
+player = vlc.MediaPlayer("Avengers.mp4")
 
 player.play()
 
 print("Video started.")
+
+
+# ============================================================
+# WINDOWS AUDIO SETUP
+# ============================================================
+
+devices = AudioUtilities.GetSpeakers()
+
+volume_control = devices.EndpointVolume
 
 
 # ============================================================
@@ -73,7 +85,11 @@ def distance_3d(point1, point2):
     dy = point2.y - point1.y
     dz = point2.z - point1.z
 
-    return (dx ** 2 + dy ** 2 + dz ** 2) ** 0.5
+    return math.sqrt(
+        dx ** 2 +
+        dy ** 2 +
+        dz ** 2
+    )
 
 
 def extract_relative_coordinates(hand):
@@ -98,7 +114,7 @@ def extract_relative_coordinates(hand):
 
 
 # ============================================================
-# PREDICTION SMOOTHING
+# GESTURE PREDICTION SMOOTHING
 # ============================================================
 
 prediction_history = deque(maxlen=5)
@@ -106,6 +122,18 @@ prediction_history = deque(maxlen=5)
 stable_prediction = "No hand"
 
 last_gesture = None
+
+
+# ============================================================
+# VOLUME SETTINGS
+# ============================================================
+
+MIN_DISTANCE = 0.05
+MAX_DISTANCE = 0.40
+
+ALPHA = 0.2
+
+smoothed_volume = None
 
 
 # ============================================================
@@ -130,22 +158,21 @@ with HandLandmarker.create_from_options(options) as landmarker:
 
     while True:
 
-        # ----------------------------------------------------
+        # ====================================================
         # READ CAMERA
-        # ----------------------------------------------------
+        # ====================================================
 
         success, frame = camera.read()
 
         if not success:
 
             print("Failed to read camera")
-
             break
 
 
-        # ----------------------------------------------------
-        # CONVERT BGR -> RGB
-        # ----------------------------------------------------
+        # ====================================================
+        # BGR -> RGB
+        # ====================================================
 
         frame_rgb = cv2.cvtColor(
             frame,
@@ -153,9 +180,9 @@ with HandLandmarker.create_from_options(options) as landmarker:
         )
 
 
-        # ----------------------------------------------------
-        # CREATE MEDIAPIPE IMAGE
-        # ----------------------------------------------------
+        # ====================================================
+        # MEDIAPIPE IMAGE
+        # ====================================================
 
         mp_image = mp.Image(
             image_format=mp.ImageFormat.SRGB,
@@ -163,18 +190,18 @@ with HandLandmarker.create_from_options(options) as landmarker:
         )
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # TIMESTAMP
-        # ----------------------------------------------------
+        # ====================================================
 
         timestamp_ms = int(
             (time.time() - start_time) * 1000
         )
 
 
-        # ----------------------------------------------------
-        # DETECT HAND
-        # ----------------------------------------------------
+        # ====================================================
+        # HAND DETECTION
+        # ====================================================
 
         result = landmarker.detect_for_video(
             mp_image,
@@ -191,9 +218,9 @@ with HandLandmarker.create_from_options(options) as landmarker:
             hand = result.hand_landmarks[0]
 
 
-            # ------------------------------------------------
-            # NORMALIZATION
-            # ------------------------------------------------
+            # =================================================
+            # ML GESTURE RECOGNITION
+            # =================================================
 
             hand_size = distance_3d(
                 hand[0],
@@ -203,41 +230,19 @@ with HandLandmarker.create_from_options(options) as landmarker:
 
             if hand_size > 0:
 
-                # --------------------------------------------
-                # EXTRACT FEATURES
-                # --------------------------------------------
-
                 features = extract_relative_coordinates(
                     hand
                 )
 
-
-                # --------------------------------------------
-                # NORMALIZE FEATURES
-                # --------------------------------------------
-
                 normalized_features = [
-
                     value / hand_size
-
                     for value in features
-
                 ]
-
-
-                # --------------------------------------------
-                # NUMPY ARRAY
-                # --------------------------------------------
 
                 feature_array = np.array(
                     normalized_features,
                     dtype=np.float32
                 )
-
-
-                # --------------------------------------------
-                # RESHAPE
-                # --------------------------------------------
 
                 feature_array = feature_array.reshape(
                     1,
@@ -245,27 +250,23 @@ with HandLandmarker.create_from_options(options) as landmarker:
                 )
 
 
-                # --------------------------------------------
-                # ML PREDICTION
-                # --------------------------------------------
+                # ---------------------------------------------
+                # RAW ML PREDICTION
+                # ---------------------------------------------
 
                 raw_prediction = model.predict(
                     feature_array
                 )[0]
 
 
-                # --------------------------------------------
-                # STORE PREDICTION
-                # --------------------------------------------
-
                 prediction_history.append(
                     raw_prediction
                 )
 
 
-                # --------------------------------------------
+                # ---------------------------------------------
                 # MAJORITY VOTE
-                # --------------------------------------------
+                # ---------------------------------------------
 
                 counts = {}
 
@@ -318,7 +319,81 @@ with HandLandmarker.create_from_options(options) as landmarker:
 
 
             # =================================================
-            # DRAW LANDMARKS
+            # VOLUME CONTROL
+            # =================================================
+
+            thumb_tip = hand[4]
+            index_tip = hand[8]
+
+            pinch_distance = distance_3d(
+                thumb_tip,
+                index_tip
+            )
+
+
+            # ---------------------------------------------
+            # DISTANCE -> RAW VOLUME
+            # ---------------------------------------------
+
+            raw_volume = (
+                (
+                    pinch_distance - MIN_DISTANCE
+                )
+                /
+                (
+                    MAX_DISTANCE - MIN_DISTANCE
+                )
+            ) * 100
+
+
+            # ---------------------------------------------
+            # LIMIT VOLUME TO 0-100
+            # ---------------------------------------------
+
+            raw_volume = max(
+                0,
+                min(100, raw_volume)
+            )
+
+
+            # ---------------------------------------------
+            # SMOOTH VOLUME
+            # ---------------------------------------------
+
+            if smoothed_volume is None:
+
+                smoothed_volume = raw_volume
+
+            else:
+
+                smoothed_volume = (
+                    ALPHA * raw_volume
+                    +
+                    (1 - ALPHA) * smoothed_volume
+                )
+
+
+            # ---------------------------------------------
+            # CONVERT 0-100 -> 0.0-1.0
+            # ---------------------------------------------
+
+            windows_volume = (
+                smoothed_volume / 100.0
+            )
+
+
+            # ---------------------------------------------
+            # SET WINDOWS VOLUME
+            # ---------------------------------------------
+
+            volume_control.SetMasterVolumeLevelScalar(
+                windows_volume,
+                None
+            )
+
+
+            # =================================================
+            # DRAW HAND
             # =================================================
 
             height, width, _ = frame.shape
@@ -374,6 +449,107 @@ with HandLandmarker.create_from_options(options) as landmarker:
                 )
 
 
+            # =================================================
+            # DRAW THUMB-INDEX DISTANCE
+            # =================================================
+
+            thumb_x = int(
+                thumb_tip.x * width
+            )
+
+            thumb_y = int(
+                thumb_tip.y * height
+            )
+
+            index_x = int(
+                index_tip.x * width
+            )
+
+            index_y = int(
+                index_tip.y * height
+            )
+
+
+            cv2.line(
+                frame,
+                (thumb_x, thumb_y),
+                (index_x, index_y),
+                (0, 255, 255),
+                4
+            )
+
+
+            # =================================================
+            # VOLUME BAR
+            # =================================================
+
+            bar_x = 20
+            bar_y = 140
+
+            bar_width = 300
+            bar_height = 30
+
+            filled_width = int(
+                (
+                    smoothed_volume / 100
+                ) * bar_width
+            )
+
+
+            cv2.rectangle(
+                frame,
+                (bar_x, bar_y),
+                (
+                    bar_x + bar_width,
+                    bar_y + bar_height
+                ),
+                (255, 255, 255),
+                2
+            )
+
+
+            cv2.rectangle(
+                frame,
+                (bar_x, bar_y),
+                (
+                    bar_x + filled_width,
+                    bar_y + bar_height
+                ),
+                (0, 255, 0),
+                -1
+            )
+
+
+            # =================================================
+            # DISPLAY RAW VOLUME
+            # =================================================
+
+            cv2.putText(
+                frame,
+                f"Raw Volume: {raw_volume:.0f}%",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 0),
+                2
+            )
+
+
+            # =================================================
+            # DISPLAY SMOOTHED VOLUME
+            # =================================================
+
+            cv2.putText(
+                frame,
+                f"Volume: {smoothed_volume:.0f}%",
+                (20, 90),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 255, 0),
+                2
+            )
+
+
         # ====================================================
         # NO HAND
         # ====================================================
@@ -385,6 +561,17 @@ with HandLandmarker.create_from_options(options) as landmarker:
             stable_prediction = "No hand"
 
 
+            cv2.putText(
+                frame,
+                "No hand - volume unchanged",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 255),
+                2
+            )
+
+
         # ====================================================
         # DISPLAY GESTURE
         # ====================================================
@@ -392,24 +579,24 @@ with HandLandmarker.create_from_options(options) as landmarker:
         cv2.putText(
             frame,
             f"Gesture: {stable_prediction}",
-            (20, 50),
+            (20, 230),
             cv2.FONT_HERSHEY_SIMPLEX,
-            1,
+            0.9,
             (0, 255, 0),
             2
         )
 
 
         # ====================================================
-        # DISPLAY INSTRUCTIONS
+        # INSTRUCTIONS
         # ====================================================
 
         cv2.putText(
             frame,
             "Fist = Pause | Open = Play | Q = Quit",
-            (20, 90),
+            (20, 270),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
+            0.6,
             (255, 255, 255),
             2
         )
