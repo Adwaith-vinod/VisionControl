@@ -1,5 +1,22 @@
+# Virtual environment
 .venv/
+
+# Python cache
 __pycache__/
 *.pyc
+
+# Dataset
+dataset/
+
+# Trained ML models
+models/*.pkl
+
+# Environment variables
 .env
+
+# VS Code
 .vscode/
+
+# OS files
+Thumbs.db
+.DS_Store
