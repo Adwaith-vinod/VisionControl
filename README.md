@@ -216,7 +216,7 @@ VisionControl/
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/VisionControl.git
+git clone https://github.com/Adwaith-vinod/VisionControl
 cd VisionControl
 ```
 
