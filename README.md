@@ -12,35 +12,31 @@ Instead of reaching for a keyboard, mouse, or remote, VisionControl uses **hand 
 
 ## ✨ Features
 
-| Gesture / Movement               | Action                                                  |
-| -------------------------------- | ------------------------------------------------------- |
-| ✊ **Fist**                       | ⏸️ Pause video                                          |
-| 🖐️ **Open Hand**                | ▶️ Play video                                           |
-| 🖐️ **Swipe Hand Right**         | ⏩ Seek forward                                          |
-| 🖐️ **Swipe Hand Left**          | ⏪ Seek backward                                         |
-| 🤏 **Thumb ↔ Index Distance**    | 🔊 Control system volume                                |
-| 📏 **Hand Distance Independent** | Consistent volume control at different camera distances |
+| Gesture / Movement | Action | State / Behavior |
+| :--- | :--- | :--- |
+| ✊ **Fist** | ⏸️ **Pause Video** | Instant playback pause, seek engine idle |
+| 🖐️ **Open Palm** | ▶️ **Play Video** | Resumes playback, enables pinch volume |
+| ✌️ **Two Fingers (Swipe Right)** | ⏩ **Seek Forward** | Continuous fast-forward scrubbing |
+| ✌️ **Two Fingers (Swipe Left)** | ⏪ **Seek Backward** | Continuous rewind scrubbing |
+| 🤏 **Thumb ↔ Index Pinch** | 🔊 **System Volume** | Scale-independent volume (active on Open Palm) |
+| 📏 **Distance Invariant** | 🎯 **Consistent Control** | Volume & gesture recognition scale across camera distances |
 
 ### Current Capabilities
 
-* 🎥 Real-time webcam hand tracking
-* 🧠 Custom-trained gesture classification model
-* ✊ Fist/Open-hand recognition
-* ⏯️ Gesture-based Play/Pause
-* 🖐️ Hand-swipe-based continuous seeking
-* 🔊 Real-time volume control
-* 📏 Scale-independent volume control
-* 🎯 Landmark-based feature extraction
-* 🧹 Prediction smoothing for more stable gestures
-* 🎞️ VLC media player integration
-* 🪟 Windows system-volume control
-* ⚡ Real-time processing
+* 🎥 Real-time webcam hand tracking with MediaPipe
+* 🧠 Custom-trained 3-class gesture classifier (`fist`, `open`, `two_finger`)
+* ⚡ State-isolated gesture execution (no accidental cross-triggers)
+* ⏩ Two-finger continuous hand scrubbing with momentum & decay
+* 🔊 Smart scale-invariant Windows volume control
+* 🛡️ Software-decoded VLC pipeline with zero frame-drop errors during scrubs
+* 🧹 Temporal voting & grace-period debounce for stable gesture transitions
+* 📊 Real-time on-screen HUD (volume bar, scrub bar, velocity stats, gesture status)
 
 ---
 
 # 🧠 How It Works
 
-VisionControl combines **computer vision, machine learning, and media control** into one pipeline.
+VisionControl combines **computer vision, machine learning, and media control** into a streamlined, state-gated pipeline.
 
 ```text
                  📷 Webcam
@@ -55,187 +51,122 @@ VisionControl combines **computer vision, machine learning, and media control** 
           └─────────────────────┘
                     │
                     ▼
-             Feature Extraction
+          Landmark Normalization
+          (Wrist-relative + Scale)
                     │
                     ▼
-          Landmark Normalization
+          ML Random Forest Classifier
                     │
-             ┌──────┴──────┐
-             │             │
-             ▼             ▼
-       ML Classifier    Measurements
-             │             │
-             ▼             ▼
-        Fist / Open    Finger Distance
-             │             │
-             ▼             ▼
-        Play / Pause     Volume
-             │
-             │
-             └──────────┬──────────┐
-                        │          │
-                        ▼          ▼
-                  Hand Movement   VLC
-                        │
-                        ▼
-                  Video Seeking
+       ┌────────────┼────────────┐
+       ▼            ▼            ▼
+    ✊ Fist      🖐️ Open     ✌️ Two Fingers
+       │            │            │
+       ▼            ▼            ▼
+     PAUSE      PLAY VIDEO   SEEK / SCRUB
+                    │            │
+                    ▼            ▼
+               Pinch Volume   Horizontal
+                 Control       Movement
 ```
 
 ---
 
 # 🤖 Machine Learning Pipeline
 
-The project does **not** directly train a model on raw webcam images.
-
-Instead, MediaPipe first extracts the hand's 21 landmarks.
-
-Each landmark contains:
+The project does **not** directly train a heavy CNN on raw webcam images. Instead, MediaPipe first extracts the hand's 21 3D landmarks (X, Y, Z coordinates).
 
 ```text
-X coordinate
-Y coordinate
-Z coordinate
+21 landmarks × 3 coordinates = 63 numerical features
 ```
 
-Therefore:
+### Feature Normalization
 
-```text
-21 landmarks × 3 coordinates
-        =
-63 numerical features
-```
-
-These features are then normalized relative to the hand.
+To ensure distance invariance (whether your hand is 30 cm or 1.5 m from the camera), features are:
+1. **Zero-centered** relative to the wrist landmark (`landmark[0]`).
+2. **Scale-normalized** by the hand size (Euclidean distance from wrist `landmark[0]` to middle MCP `landmark[9]`).
 
 ```text
 Webcam Frame
      ↓
 21 Hand Landmarks
      ↓
-Relative Coordinates
+Wrist-Relative Coordinates (x - x_wrist, y - y_wrist, z - z_wrist)
      ↓
-Scale Normalization
+Scale Normalization (features / hand_size)
      ↓
-63 Features
+63 Normalized Features
      ↓
-Random Forest
+Random Forest Classifier (100 Trees)
      ↓
-Gesture Prediction
+Gesture Class: ['fist', 'open', 'two_finger']
+     ↓
+Temporal Majority Voting (Queue of 7 Frames, Threshold = 5)
 ```
 
-The current classifier recognizes:
-
-* `fist`
-* `open`
+The classifier accurately recognizes:
+* `fist` &rarr; Pauses video
+* `open` &rarr; Plays video & enables volume pinch
+* `two_finger` &rarr; Engages video seeking/scrubbing mode
 
 ---
 
-# ⏩ Hand-Swipe-Based Continuous Seeking
+# ⏩ Two-Finger Continuous Seeking
 
-VisionControl uses **hand movement** to control the video position.
+VisionControl uses **horizontal movement of two raised fingers** to scrub video position smoothly.
 
-Instead of treating a swipe as a single event such as:
-
-> "Swipe detected → jump 10 seconds"
-
-the system continuously analyzes the movement of the hand.
+Instead of treating a swipe as a crude trigger (e.g. *"swipe detected &rarr; jump 10s"*), the system behaves like a **virtual scrubbing wheel**:
 
 ```text
-          Hand Movement
+       Two Fingers Detected
+                ↓
+    Index Fingertip Tracking
                 ↓
         Position Smoothing
                 ↓
-       Movement Calculation
+       Movement Velocity (dt)
                 ↓
-        Velocity Estimation
+     Robust Median Velocity
                 ↓
-        Velocity Smoothing
+     Exponential Velocity Filter
                 ↓
-          Seek Rate
+      Dynamic Seek Acceleration
                 ↓
-        Video Position
+      VLC Time Update (set_time)
 ```
 
-### 🖐️ Swipe Right
+### ✌️ Scrubbing Controls
 
-Moving your hand toward the **right** continuously moves the video forward.
-
-```text
-🖐️  →  →  →  →  →  ⏩
-             Video →
-```
-
-### 🖐️ Swipe Left
-
-Moving your hand toward the **left** continuously moves the video backward.
-
-```text
-⏪  ←  ←  ←  ←  ←  🖐️
-      ← Video
-```
-
-The seeking system incorporates:
-
-* position smoothing
-* movement detection
-* velocity calculation
-* velocity smoothing
-* dead-zone handling
-* acceleration
-* momentum
-* boundary detection
-* controlled VLC updates
-
-This makes the hand behave more like a **virtual video-scrubbing controller** rather than a simple one-time swipe gesture.
+* **✌️ Swipe Right:** Continuously advances the video forward at a rate proportional to your hand's speed.
+* **✌️ Swipe Left:** Continuously rewinds the video backward at a rate proportional to your hand's speed.
+* **Momentum & Friction:** When your hand stops moving, seeking decelerates smoothly via `MOMENTUM_DECAY` rather than cutting off abruptly.
+* **Flicker Debounce:** A 400ms grace period prevents minor angle shifts during a swipe from interrupting the scrub or accidentally triggering play/pause.
+* **Playback Synchronization:** When stationary, the seek target continuously synchronizes with live playback so scrubbing always begins from the current scene.
 
 ---
 
 # 🔊 Smart Volume Control
 
-Volume is handled differently from gesture classification.
+Volume is handled independently from gesture classification:
 
-We don't need an ML model to determine whether the volume should be 30%, 50%, or 90%.
-
-Instead, VisionControl measures the distance between:
-
+Instead of using an ML model to guess target percentages, VisionControl directly measures the 3D distance between:
 ```text
-👍 Thumb tip
-      ↕
-☝️ Index fingertip
+👍 Thumb tip (Landmark 4)  ↔  ☝️ Index tip (Landmark 8)
 ```
 
-However, absolute distance changes when the hand moves closer to or farther from the camera.
-
-So VisionControl normalizes the distance using hand size:
+### Scale Normalization
 
 ```text
-Normalized Pinch Distance
-=
-Thumb–Index Distance
-/
-Hand Size
+Normalized Pinch Distance = (Thumb–Index Distance) / Hand Size
 ```
-
-This makes volume control more consistent at different camera distances.
 
 ```text
-Hand Close
-    ↓
-Large landmarks
-    ↓
-Normalized distance
-    ↓
-Volume
-
-
-Hand Far
-    ↓
-Small landmarks
-    ↓
-Normalized distance
-    ↓
-Similar volume
+Hand Close (Large Landmarks)   ──┐
+                                 ├── Normalized Distance ──► Consistent Volume
+Hand Far (Small Landmarks)     ──┘
 ```
+
+* **Isolated to Open Hand:** Volume adjustments are active **only** when showing an open palm (`open`). During two-finger scrubbing or a fist, volume is frozen to prevent accidental swings.
+* **PyCaw Direct Integration:** Directly interfaces with the Windows Core Audio Endpoint Volume API for instantaneous hardware-level volume control.
 
 ---
 
@@ -244,250 +175,149 @@ Similar volume
 ```text
 VisionControl/
 │
-├── main.py
-├── prepare_dataset.py
-├── train_model.py
-├── predict_gesture.py
-├── volume_control.py
-├── windows_volume.py
-├── gesture_player.py
-├── vlc_test.py
-│
 ├── dataset/
-│   └── gestures.csv
-│
+│   └── gestures.csv            # Training dataset (fist, open, two_finger)
 ├── models/
-│   ├── gesture_model.pkl
-│   └── hand_landmarker.task
+│   ├── gesture_model.pkl       # Trained Random Forest classifier
+│   └── hand_landmarker.task    # MediaPipe Hand Landmarker model
 │
-├── .gitignore
-└── README.md
+├── gesture_player.py           # Main application with full gesture pipeline
+├── main.py                     # Interactive dataset collection tool
+├── train_model.py              # Model training and evaluation script
+│
+├── Avengers.mp4                # Demo video
+├── requirements.txt            # Python dependencies
+├── .gitignore                  # Git configuration
+└── README.md                   # Documentation
 ```
 
-### Main Components
+### Core Components
 
-| File                 | Purpose                                   |
-| -------------------- | ----------------------------------------- |
-| `main.py`            | Collect hand-gesture training data        |
-| `prepare_dataset.py` | Prepare and split the dataset             |
-| `train_model.py`     | Train and evaluate the gesture classifier |
-| `predict_gesture.py` | Test real-time gesture prediction         |
-| `volume_control.py`  | Handle finger-distance-based volume logic |
-| `windows_volume.py`  | Interface with Windows system volume      |
-| `gesture_player.py`  | Main integrated VisionControl application |
-| `vlc_test.py`        | Test VLC video playback                   |
+| Component | Description |
+| :--- | :--- |
+| [`gesture_player.py`](file:///c:/Users/adwai/OneDrive/Desktop/Projects/VisionControl/gesture_player.py) | **Main application** &mdash; integrates MediaPipe, ML classification, swipe seek engine, PyCaw audio, and VLC media player. |
+| [`main.py`](file:///c:/Users/adwai/OneDrive/Desktop/Projects/VisionControl/main.py) | **Data collector** &mdash; records normalized landmark features from webcam into `dataset/gestures.csv` with keyboard controls. |
+| [`train_model.py`](file:///c:/Users/adwai/OneDrive/Desktop/Projects/VisionControl/train_model.py) | **Model trainer** &mdash; splits `gestures.csv`, trains a 100-tree Random Forest, evaluates metrics, and exports `gesture_model.pkl`. |
 
 ---
 
 # 🛠️ Tech Stack
 
-### Computer Vision
-
-* **OpenCV**
-* **MediaPipe**
-
-### Machine Learning
-
-* **Python**
-* **NumPy**
-* **Pandas**
-* **Scikit-learn**
-* **Random Forest**
-* **Joblib**
-
-### Media Control
-
-* **VLC**
-* **python-vlc**
-* **Pycaw**
-
-### Development
-
-* **Git**
-* **GitHub**
-* **VS Code**
+* **Computer Vision:** OpenCV, MediaPipe Tasks Vision (`hand_landmarker.task`)
+* **Machine Learning:** Scikit-learn (Random Forest), NumPy, Pandas, Joblib
+* **Media Control:** VLC Media Player (`python-vlc` with software decoding flags)
+* **Audio Control:** PyCaw (`CoreAudio` Windows Audio Session API)
+* **Environment:** Python 3.10+ on Windows
 
 ---
 
 # 🚀 Getting Started
 
-## 1. Clone the Repository
+### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/VisionControl.git
 cd VisionControl
 ```
 
-## 2. Create a Virtual Environment
+### 2. Set Up Virtual Environment
 
 ```bash
 python -m venv .venv
-```
-
-Activate it:
-
-```bash
 .venv\Scripts\activate
 ```
 
-## 3. Install Dependencies
+### 3. Install Dependencies
 
 ```bash
-pip install opencv-python mediapipe pandas scikit-learn joblib python-vlc pycaw
+pip install -r requirements.txt
 ```
 
-Make sure **VLC Media Player** is installed on your system.
+> **Prerequisite:** Make sure [VLC Media Player](https://www.videolan.org/vlc/) (64-bit) is installed on your system.
 
----
+### 4. Add a Video
 
-# 🎥 Add a Video
-
-Place your video inside the project directory:
-
-```text
-VisionControl/
-│
-├── Avengers.mp4
-├── gesture_player.py
-└── ...
-```
-
-The current application expects:
+Place your video file in the project folder and configure the path in [`gesture_player.py`](file:///c:/Users/adwai/OneDrive/Desktop/Projects/VisionControl/gesture_player.py):
 
 ```python
 VIDEO_PATH = "Avengers.mp4"
 ```
 
-You can change this variable to another video.
-
-> Video files are excluded from Git using `.gitignore` to avoid unnecessarily large repository sizes.
-
 ---
 
 # 🧪 Training Your Own Gesture Model
 
-One of the main goals of VisionControl is to experiment with **your own machine-learning model** rather than relying on a pre-trained gesture classifier.
+VisionControl allows you to easily collect your own dataset and train a custom model from scratch.
 
-### Step 1 — Collect Data
+### Step 1 — Collect Training Data
+
+Run the interactive data collector:
 
 ```bash
 python main.py
 ```
 
-Collect examples for:
+* Position your hand in front of the camera.
+* Press **`F`** &rarr; Select `fist`
+* Press **`O`** &rarr; Select `open`
+* Press **`T`** (or **`2`**) &rarr; Select `two_finger`
+* Press **`S`** &rarr; Start / Stop recording (collect ~2,000 samples per class)
+* Press **`Q`** &rarr; Save and quit
 
-```text
-fist
-open
-```
+Collected landmarks are automatically saved to `dataset/gestures.csv`.
 
-The collected landmark features are stored in:
-
-```text
-dataset/gestures.csv
-```
-
-### Step 2 — Prepare the Dataset
-
-```bash
-python prepare_dataset.py
-```
-
-### Step 3 — Train the Model
+### Step 2 — Train the Classifier
 
 ```bash
 python train_model.py
 ```
 
-The trained model is saved as:
-
-```text
-models/gesture_model.pkl
-```
-
-### Step 4 — Test Real-Time Prediction
-
-```bash
-python predict_gesture.py
-```
+This script:
+1. Loads `dataset/gestures.csv`.
+2. Splits data into 80% train and 20% test sets (stratified).
+3. Trains a `RandomForestClassifier(n_estimators=100)`.
+4. Prints evaluation metrics (Accuracy, Confusion Matrix, Classification Report).
+5. Exports the trained model to `models/gesture_model.pkl`.
 
 ---
 
 # ▶️ Run VisionControl
 
-Once the model and MediaPipe hand-landmarker model are available:
+Launch the main integrated application:
 
 ```bash
 python gesture_player.py
 ```
 
-You should see the VisionControl webcam interface.
+### On-Screen Controls
 
 ```text
-✊ → Pause
-🖐️ → Play
-🖐️ → Right → Seek Forward
-🖐️ → Left  → Seek Backward
-🤏 → Volume
+✊ Fist                 → ⏸️ Pause Video
+🖐️ Open Palm            → ▶️ Play Video
+✌️ Two Fingers (Swipe)  → ⏩ Scrub Forward / ⏪ Scrub Backward
+🤏 Thumb-Index Pinch    → 🔊 Adjust Windows Volume
+Q                       → Quit Application
 ```
-
-Press:
-
-```text
-Q
-```
-
-to exit.
 
 ---
 
 # 🎯 Interaction Model
 
-VisionControl separates different types of interactions instead of forcing everything into one ML model.
-
-### Discrete Gestures
+VisionControl prevents gesture conflicts by isolating states:
 
 ```text
-✊ Fist
-   ↓
-Classifier
-   ↓
-Pause
+┌─────────────────┬──────────────────┬──────────────────┐
+│  Current Mode   │  Active Engine   │  Inactive Engine │
+├─────────────────┼──────────────────┼──────────────────┤
+│ ✊ Fist         │ VLC Pause        │ Seeking & Volume │
+│ 🖐️ Open Palm    │ VLC Play + Volume│ Seeking          │
+│ ✌️ Two Fingers  │ Swipe Scrubbing  │ Volume & Playback│
+└─────────────────┴──────────────────┴──────────────────┘
 ```
 
-```text
-🖐️ Open Hand
-   ↓
-Classifier
-   ↓
-Play
-```
-
-### Continuous Volume
-
-```text
-Thumb ↔ Index Distance
-          ↓
-   Normalized Distance
-          ↓
-        Volume
-```
-
-### Hand Movement
-
-```text
-Hand Position
-      ↓
-Movement
-      ↓
-Velocity
-      ↓
-Direction + Speed
-      ↓
-Video Seeking
-```
-
-This allows each interaction to use the technique that best fits the problem.
+* **Zero Seeking Glitches:** The video seeking engine is strictly locked to `two_finger`. Your open palm or fist will never trigger unwanted video jumping.
+* **Volume Isolation:** Volume adjustment only responds when an open palm is shown, avoiding volume spikes during seeking.
+* **VLC Software Decoding:** Configured with `--avcodec-hw=none` to eliminate H.264 GPU accelerator crashes during high-speed scrubbing.
 
 ---
 
@@ -495,170 +325,36 @@ This allows each interaction to use the technique that best fits the problem.
 
 ### ✅ Completed
 
-* [x] Webcam hand tracking
-* [x] 21 hand landmark extraction
-* [x] Landmark feature engineering
-* [x] Scale normalization
-* [x] Dataset collection
-* [x] Fist/Open gesture dataset
-* [x] Random Forest training
-* [x] Model evaluation
-* [x] Real-time gesture prediction
-* [x] Prediction smoothing
-* [x] VLC integration
-* [x] Gesture-based Play/Pause
-* [x] Continuous hand-swipe seeking
-* [x] Seek smoothing
-* [x] Seek momentum
-* [x] Seek boundary handling
-* [x] Finger-distance volume control
-* [x] Scale-independent volume control
-* [x] Windows system-volume control
+* [x] Real-time 21 hand landmark tracking with MediaPipe
+* [x] Scale- and distance-invariant feature engineering
+* [x] 3-class dataset collection (`fist`, `open`, `two_finger`)
+* [x] Random Forest model training & evaluation pipeline (>99% accuracy)
+* [x] State-isolated Play/Pause and Volume control
+* [x] Two-finger dynamic scrubbing engine with momentum & friction
+* [x] 400ms gesture grace period to prevent transition flickers
+* [x] Direct Windows master volume control via PyCaw
+* [x] Stable VLC scrubbing with software decode integration
+* [x] Full HUD overlay (volume bar, scrub indicator, gesture readout)
 
 ### 🚧 In Development
 
-* [ ] Swipe gesture refinement
-* [ ] Subtitle control
-* [ ] Audio-track switching
-* [ ] Playback speed control
-* [ ] Fullscreen control
-* [ ] Mute gesture
-* [ ] Previous/Next video
-* [ ] Brightness control
-
-### 🔮 Future ML Development
-
-* [ ] Expand gesture dataset
-* [ ] Compare Random Forest vs SVM
-* [ ] Train a custom neural network
-* [ ] Dynamic gesture recognition
-* [ ] Temporal sequence modeling
-* [ ] LSTM/GRU experiments
-* [ ] Transformer-based gesture recognition
-* [ ] Custom gesture vocabulary
-* [ ] Personalized gesture calibration
-
----
-
-# 🔬 Future Architecture
-
-The long-term goal is to evolve VisionControl into a more advanced gesture-recognition platform.
-
-```text
-                 Webcam
-                   │
-                   ▼
-             Hand Detection
-                   │
-                   ▼
-            Landmark Sequence
-                   │
-          ┌────────┴─────────┐
-          │                  │
-          ▼                  ▼
-     Static Gesture      Dynamic Gesture
-       Classifier          Model
-          │                  │
-          └────────┬─────────┘
-                   ▼
-             Gesture Engine
-                   │
-                   ▼
-             Command System
-                   │
-                   ▼
-             Media Player
-```
-
----
-
-# 🧠 Learning Goals
-
-VisionControl is a hands-on learning project focused on understanding how computer vision and machine learning systems are built from individual components.
-
-The project explores:
-
-* Computer vision
-* Hand landmark detection
-* Feature engineering
-* Dataset creation
-* Data preprocessing
-* Machine learning
-* Model evaluation
-* Real-time inference
-* Signal smoothing
-* Temporal movement analysis
-* Human-computer interaction
-* Media automation
-
-The goal is not simply to build a gesture-controlled video player, but to understand the engineering decisions behind every component.
-
----
-
-# 🔐 Privacy
-
-VisionControl is designed around local processing.
-
-The webcam feed is processed locally for hand detection and gesture recognition.
-
-No cloud-based video processing is required for the current system.
-
----
-
-# ⚡ Performance
-
-The application is designed for real-time interaction using:
-
-* lightweight landmark representations
-* local ML inference
-* smoothed predictions
-* controlled VLC updates
-* direct Windows audio control
-
-The system avoids sending every webcam frame through a large neural network, keeping the architecture lightweight.
-
----
-
-# 🤝 Contributing
-
-This project is primarily a personal learning project, but ideas, improvements, and experiments are welcome.
-
-If you want to contribute:
-
-```bash
-git checkout -b feature/your-feature
-```
-
-Make your changes, test them, and submit a pull request.
-
----
-
-# 📜 License
-
-This project is currently intended as a personal learning and development project.
-
-A formal open-source license can be added in the future.
+* [ ] Fullscreen toggle gesture
+* [ ] Audio mute / unmute gesture
+* [ ] Next / Previous chapter or playlist track
+* [ ] Configurable video path via CLI argument (`python gesture_player.py --video path/to/video.mp4`)
+* [ ] Multi-platform audio support (Linux / macOS)
 
 ---
 
 # 👨‍💻 Author
 
-**Adwaith Vinod**
+**Adwaith Vinod**  
+B.Tech Computer Science Engineering  
 
-B.Tech Computer Science Engineering
-
-Interested in:
-
-* Artificial Intelligence
-* Machine Learning
-* Computer Vision
-* AI Engineering
-* Software Development
+Interested in Artificial Intelligence, Machine Learning, Computer Vision, and Software Engineering.
 
 ---
 
 ## ⭐ VisionControl
-
-> **See it. Understand it. Control it.**
-
-**Your hand. Your gestures. Your video.**
+> **See it. Understand it. Control it.**  
+> *Your hand. Your gestures. Your video.*

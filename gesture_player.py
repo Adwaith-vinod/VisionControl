@@ -18,11 +18,6 @@ model = joblib.load(
     "models/gesture_model.pkl"
 )
 
-print(
-    "Gesture model loaded successfully."
-)
-
-
 # ============================================================
 # FEATURE NAMES
 # ============================================================
@@ -39,9 +34,15 @@ FEATURE_NAMES = [
 
 VIDEO_PATH = "Avengers.mp4"
 
-player = vlc.MediaPlayer(
-    VIDEO_PATH
+vlc_instance = vlc.Instance(
+    "--quiet",
+    "--avcodec-hw=none",
+    "--file-caching=300"
 )
+
+player = vlc_instance.media_player_new()
+media = vlc_instance.media_new(VIDEO_PATH)
+player.set_media(media)
 
 player.play()
 
@@ -315,6 +316,10 @@ target_time_ms = None
 
 smoothed_seek_rate = 0.0
 
+last_two_finger_time = 0.0
+
+is_seeking = False
+
 
 # ------------------------------------------------------------
 # BOUNDARY STATE
@@ -329,7 +334,7 @@ at_video_end = False
 # MINIMUM VLC SEEK
 # ------------------------------------------------------------
 
-MIN_SEEK_DELTA_MS = 25
+MIN_SEEK_DELTA_MS = 100
 
 
 # ============================================================
@@ -351,7 +356,10 @@ MAX_PINCH_RATIO = 1.20
 
 VOLUME_ALPHA = 0.20
 
-smoothed_volume = None
+try:
+    smoothed_volume = float(volume_control.GetMasterVolumeLevelScalar() * 100)
+except Exception:
+    smoothed_volume = 50.0
 
 
 # ------------------------------------------------------------
@@ -487,552 +495,8 @@ with HandLandmarker.create_from_options(
                 result.hand_landmarks[0]
             )
 
-
-            # =================================================
-            # INDEX FINGER
-            # =================================================
-
+            thumb_tip = hand[4]
             index_tip = hand[8]
-
-            index_x = index_tip.x
-
-
-            # =================================================
-            # SMOOTH POSITION
-            # =================================================
-
-            if smoothed_index_x is None:
-
-                smoothed_index_x = (
-                    index_x
-                )
-
-            else:
-
-                smoothed_index_x = (
-
-                    POSITION_ALPHA
-                    *
-                    index_x
-
-                    +
-
-                    (1 - POSITION_ALPHA)
-                    *
-                    smoothed_index_x
-                )
-
-
-            # =================================================
-            # TIME
-            # =================================================
-
-            current_sample_time = (
-                time.time()
-            )
-
-
-            # =================================================
-            # RAW VELOCITY
-            # =================================================
-
-            if (
-
-                previous_index_x
-                is not None
-
-                and
-
-                previous_sample_time
-                is not None
-
-            ):
-
-                dt = (
-
-                    current_sample_time
-                    -
-                    previous_sample_time
-                )
-
-
-                # Prevent abnormal frame
-                # time values.
-
-                dt = max(
-                    0.008,
-                    min(
-                        dt,
-                        0.08
-                    )
-                )
-
-
-                raw_velocity = (
-
-                    smoothed_index_x
-                    -
-                    previous_index_x
-                ) / dt
-
-
-                # Reject extreme
-                # tracking spikes.
-
-                raw_velocity = max(
-
-                    -2.0,
-
-                    min(
-                        2.0,
-                        raw_velocity
-                    )
-                )
-
-            else:
-
-                raw_velocity = 0.0
-
-
-            previous_index_x = (
-                smoothed_index_x
-            )
-
-            previous_sample_time = (
-                current_sample_time
-            )
-
-
-            # =================================================
-            # STORE VELOCITY
-            # =================================================
-
-            velocity_history.append(
-                raw_velocity
-            )
-
-
-            # =================================================
-            # ROBUST VELOCITY
-            # =================================================
-
-            sorted_velocities = sorted(
-                velocity_history
-            )
-
-
-            average_velocity = (
-                sorted_velocities[
-                    len(sorted_velocities) // 2
-                ]
-            )
-
-
-            # =================================================
-            # EXPONENTIAL VELOCITY SMOOTHING
-            # =================================================
-
-            smoothed_hand_velocity = (
-
-                VELOCITY_ALPHA
-                *
-                average_velocity
-
-                +
-
-                (1 - VELOCITY_ALPHA)
-                *
-                smoothed_hand_velocity
-            )
-
-
-            # =================================================
-            # HAND SPEED
-            # =================================================
-
-            hand_speed = abs(
-                smoothed_hand_velocity
-            )
-
-
-            # =================================================
-            # TARGET SEEK RATE
-            # =================================================
-
-            if (
-                hand_speed
-                <
-                MIN_SPEED
-            ):
-
-                target_seek_rate = 0.0
-
-            else:
-
-                normalized_speed = (
-
-                    hand_speed
-                    -
-                    MIN_SPEED
-
-                ) / (
-
-                    MAX_SPEED
-                    -
-                    MIN_SPEED
-                )
-
-
-                normalized_speed = max(
-
-                    0.0,
-
-                    min(
-                        1.0,
-                        normalized_speed
-                    )
-                )
-
-
-                # -----------------------------------------
-                # NON-LINEAR SPEED CURVE
-                # -----------------------------------------
-
-                speed_curve = (
-
-                    normalized_speed
-                    **
-                    SEEK_POWER
-                )
-
-
-                # -----------------------------------------
-                # DIRECTION
-                # -----------------------------------------
-
-                if (
-                    smoothed_hand_velocity
-                    >
-                    0
-                ):
-
-                    direction = 1.0
-
-                else:
-
-                    direction = -1.0
-
-
-                # -----------------------------------------
-                # TARGET SEEK RATE
-                # -----------------------------------------
-
-                target_seek_rate = (
-
-                    direction
-                    *
-                    speed_curve
-                    *
-                    MAX_SEEK_RATE
-                )
-
-
-            # =================================================
-            # SMOOTH SEEK RATE
-            # =================================================
-
-            direction_changed = (
-
-                smoothed_seek_rate
-                !=
-                0
-
-                and
-
-                target_seek_rate
-                !=
-                0
-
-                and
-
-                (
-                    smoothed_seek_rate
-                    >
-                    0
-                )
-
-                !=
-
-                (
-                    target_seek_rate
-                    >
-                    0
-                )
-            )
-
-
-            if direction_changed:
-
-                smoothed_seek_rate *= 0.20
-
-
-            if (
-                abs(target_seek_rate)
-                >
-                MIN_SEEK_RATE
-            ):
-
-                smoothed_seek_rate += (
-
-                    target_seek_rate
-                    -
-                    smoothed_seek_rate
-
-                ) * SEEK_ACCELERATION
-
-            else:
-
-                smoothed_seek_rate *= (
-                    MOMENTUM_DECAY
-                )
-
-
-            # Remove tiny movement.
-
-            if (
-                abs(smoothed_seek_rate)
-                <
-                MIN_SEEK_RATE
-            ):
-
-                smoothed_seek_rate = 0.0
-
-
-            # Safety limit.
-
-            smoothed_seek_rate = max(
-
-                -MAX_SEEK_RATE,
-
-                min(
-                    MAX_SEEK_RATE,
-                    smoothed_seek_rate
-                )
-            )
-
-
-            # =================================================
-            # HANDLE BOUNDARIES
-            # =================================================
-
-            if (
-
-                at_video_end
-
-                and
-
-                smoothed_seek_rate
-                >
-                0
-
-            ):
-
-                smoothed_seek_rate = 0.0
-
-
-            if (
-
-                at_video_start
-
-                and
-
-                smoothed_seek_rate
-                <
-                0
-
-            ):
-
-                smoothed_seek_rate = 0.0
-
-
-            # Changing direction unlocks
-            # the boundary.
-
-            if (
-                smoothed_seek_rate
-                <
-                0
-            ):
-
-                at_video_end = False
-
-
-            if (
-                smoothed_seek_rate
-                >
-                0
-            ):
-
-                at_video_start = False
-
-
-            # =================================================
-            # VLC UPDATE
-            # =================================================
-
-            current_real_time = (
-                time.time()
-            )
-
-            time_since_last_seek = (
-
-                current_real_time
-                -
-                last_seek_update
-            )
-
-
-            if (
-                time_since_last_seek
-                >=
-                SEEK_UPDATE_INTERVAL
-            ):
-
-                # ---------------------------------------------
-                # INITIAL TARGET
-                # ---------------------------------------------
-
-                if target_time_ms is None:
-
-                    current_time_ms = (
-                        player.get_time()
-                    )
-
-                    if (
-                        current_time_ms
-                        >=
-                        0
-                    ):
-
-                        target_time_ms = float(
-                            current_time_ms
-                        )
-
-
-                # ---------------------------------------------
-                # VIDEO LENGTH
-                # ---------------------------------------------
-
-                video_length_ms = (
-                    player.get_length()
-                )
-
-
-                if (
-
-                    target_time_ms
-                    is not None
-
-                    and
-
-                    video_length_ms
-                    >
-                    0
-
-                ):
-
-                    # Convert seek rate
-                    # into video time.
-
-                    seek_delta_ms = (
-
-                        smoothed_seek_rate
-                        *
-                        time_since_last_seek
-                        *
-                        1000
-                    )
-
-
-                    if (
-                        abs(seek_delta_ms)
-                        >=
-                        MIN_SEEK_DELTA_MS
-                    ):
-
-                        target_time_ms += (
-                            seek_delta_ms
-                        )
-
-
-                        # -------------------------------------
-                        # VIDEO END
-                        # -------------------------------------
-
-                        if (
-                            target_time_ms
-                            >=
-                            video_length_ms
-                        ):
-
-                            target_time_ms = float(
-                                video_length_ms
-                            )
-
-                            smoothed_seek_rate = 0.0
-
-                            if not at_video_end:
-
-                                print(
-                                    "Reached VIDEO END"
-                                )
-
-                            at_video_end = True
-
-
-                        # -------------------------------------
-                        # VIDEO START
-                        # -------------------------------------
-
-                        elif (
-                            target_time_ms
-                            <=
-                            0
-                        ):
-
-                            target_time_ms = 0.0
-
-                            smoothed_seek_rate = 0.0
-
-                            if not at_video_start:
-
-                                print(
-                                    "Reached VIDEO START"
-                                )
-
-                            at_video_start = True
-
-
-                        else:
-
-                            at_video_start = False
-
-                            at_video_end = False
-
-
-                        # -------------------------------------
-                        # SEND POSITION TO VLC
-                        # -------------------------------------
-
-                        player.set_time(
-                            int(target_time_ms)
-                        )
-
-
-                last_seek_update = (
-                    current_real_time
-                )
-
 
             # =================================================
             # ML GESTURE RECOGNITION
@@ -1042,7 +506,6 @@ with HandLandmarker.create_from_options(
                 hand[0],
                 hand[9]
             )
-
 
             if hand_size > 0:
 
@@ -1056,33 +519,25 @@ with HandLandmarker.create_from_options(
                     )
                 )
 
-
                 # ---------------------------------------------
                 # NORMALIZE
                 # ---------------------------------------------
 
                 normalized_features = [
-
                     value / hand_size
-
                     for value in features
-
                 ]
-
 
                 # ---------------------------------------------
                 # DATAFRAME
                 # ---------------------------------------------
 
                 feature_array = pd.DataFrame(
-
                     [
                         normalized_features
                     ],
-
                     columns=FEATURE_NAMES
                 )
-
 
                 # ---------------------------------------------
                 # PREDICT
@@ -1094,11 +549,9 @@ with HandLandmarker.create_from_options(
                     )[0]
                 )
 
-
                 prediction_history.append(
                     raw_prediction
                 )
-
 
                 # =================================================
                 # MAJORITY VOTE
@@ -1106,31 +559,22 @@ with HandLandmarker.create_from_options(
 
                 counts = {}
 
-
                 for prediction in (
                     prediction_history
                 ):
-
                     counts[prediction] = (
-
                         counts.get(
                             prediction,
                             0
                         )
-
                         +
-
                         1
                     )
 
-
                 candidate_gesture = max(
-
                     counts,
-
                     key=counts.get
                 )
-
 
                 candidate_votes = (
                     counts[
@@ -1138,43 +582,38 @@ with HandLandmarker.create_from_options(
                     ]
                 )
 
-
                 # =================================================
                 # STABLE GESTURE
                 # =================================================
 
                 if (
-
                     candidate_votes
                     >=
                     GESTURE_REQUIRED_VOTES
-
                 ):
-
                     stable_prediction = (
                         candidate_gesture
                     )
-
 
                 # =================================================
                 # GESTURE ACTION
                 # =================================================
 
-                if (
+                if is_seeking:
+                    last_two_finger_time = time.time()
 
+                # Grace period: stay in seeking mode for up to 0.4s to absorb quick hand flickers during swipe
+                is_seeking = (stable_prediction == "two_finger") or (
+                    (time.time() - last_two_finger_time < 0.4) and (stable_prediction != "fist")
+                )
+
+                if (
                     stable_prediction
                     !=
                     last_gesture
-
                 ):
-
-                    last_gesture = (
-                        stable_prediction
-                    )
-
-
                     # ---------------------------------------------
-                    # FIST → PAUSE
+                    # FIST -> PAUSE
                     # ---------------------------------------------
 
                     if (
@@ -1182,16 +621,14 @@ with HandLandmarker.create_from_options(
                         ==
                         "fist"
                     ):
-
+                        last_gesture = stable_prediction
                         print(
                             "Gesture: FIST -> PAUSE"
                         )
-
                         player.pause()
 
-
                     # ---------------------------------------------
-                    # OPEN → PLAY
+                    # OPEN -> PLAY (only if not in swipe grace period)
                     # ---------------------------------------------
 
                     elif (
@@ -1199,187 +636,356 @@ with HandLandmarker.create_from_options(
                         ==
                         "open"
                     ):
+                        if not is_seeking:
+                            last_gesture = stable_prediction
+                            print(
+                                "Gesture: OPEN -> PLAY"
+                            )
+                            if (
+                                player.is_playing()
+                                ==
+                                0
+                            ):
+                                player.play()
 
+                    # ---------------------------------------------
+                    # TWO FINGERS -> SEEK MODE
+                    # ---------------------------------------------
+
+                    elif (
+                        stable_prediction
+                        ==
+                        "two_finger"
+                    ):
+                        last_gesture = stable_prediction
                         print(
-                            "Gesture: OPEN -> PLAY"
+                            "Gesture: TWO FINGER -> SEEK MODE"
                         )
 
-                        # Don't repeatedly call play
-                        # if the video is already playing.
-
-                        if (
-                            player.is_playing()
-                            ==
-                            0
-                        ):
-
-                            player.play()
-
-
-            # =================================================
-            # VOLUME CONTROL
-            # =================================================
-
-            thumb_tip = hand[4]
-
-            index_tip = hand[8]
-
-
-            # -------------------------------------------------
-            # THUMB → INDEX DISTANCE
-            # -------------------------------------------------
-
-            pinch_distance = distance_3d(
-
-                thumb_tip,
-
-                index_tip
-            )
-
-
-            # -------------------------------------------------
-            # HAND SIZE
-            # -------------------------------------------------
-
-            # Wrist → middle MCP.
-            #
-            # This represents the approximate scale
-            # of the detected hand.
-
-            hand_size = distance_3d(
-
-                hand[0],
-
-                hand[9]
-            )
-
-
-            # -------------------------------------------------
-            # SCALE-INVARIANT PINCH
-            # -------------------------------------------------
-
-            if hand_size > 0:
-
-                normalized_pinch_distance = (
-
-                    pinch_distance
-                    /
-                    hand_size
-
-                )
-
             else:
-
-                normalized_pinch_distance = 0.0
-
-
-            # -------------------------------------------------
-            # NORMALIZED PINCH → VOLUME
-            # -------------------------------------------------
-
-            raw_volume = (
-
-                (
-
-                    normalized_pinch_distance
-                    -
-                    MIN_PINCH_RATIO
-
-                )
-
-                /
-
-                (
-
-                    MAX_PINCH_RATIO
-                    -
-                    MIN_PINCH_RATIO
-
-                )
-
-            ) * 100
-
-
-            # -------------------------------------------------
-            # LIMIT VOLUME TO 0–100
-            # -------------------------------------------------
-
-            raw_volume = max(
-
-                0,
-
-                min(
-                    100,
-                    raw_volume
-                )
-            )
-
+                is_seeking = False
 
             # =================================================
-            # VOLUME SMOOTHING
+            # SEEK SYSTEM (TWO FINGERS ONLY)
             # =================================================
 
-            if smoothed_volume is None:
+            if is_seeking:
 
-                smoothed_volume = (
-                    raw_volume
-                )
+                index_x = index_tip.x
 
-            else:
+                # ---------------------------------------------
+                # SMOOTH POSITION
+                # ---------------------------------------------
 
-                smoothed_volume = (
+                if smoothed_index_x is None:
+                    smoothed_index_x = index_x
+                else:
+                    smoothed_index_x = (
+                        POSITION_ALPHA
+                        *
+                        index_x
+                        +
+                        (1 - POSITION_ALPHA)
+                        *
+                        smoothed_index_x
+                    )
 
-                    VOLUME_ALPHA
+                # ---------------------------------------------
+                # TIME
+                # ---------------------------------------------
+
+                current_sample_time = time.time()
+
+                # ---------------------------------------------
+                # RAW VELOCITY
+                # ---------------------------------------------
+
+                if (
+                    previous_index_x is not None
+                    and previous_sample_time is not None
+                ):
+                    dt = (
+                        current_sample_time
+                        -
+                        previous_sample_time
+                    )
+                    dt = max(0.008, min(dt, 0.08))
+
+                    raw_velocity = (
+                        smoothed_index_x
+                        -
+                        previous_index_x
+                    ) / dt
+
+                    raw_velocity = max(
+                        -2.0,
+                        min(2.0, raw_velocity)
+                    )
+                else:
+                    raw_velocity = 0.0
+
+                previous_index_x = smoothed_index_x
+                previous_sample_time = current_sample_time
+
+                # ---------------------------------------------
+                # STORE VELOCITY
+                # ---------------------------------------------
+
+                velocity_history.append(raw_velocity)
+
+                # ---------------------------------------------
+                # ROBUST VELOCITY
+                # ---------------------------------------------
+
+                sorted_velocities = sorted(velocity_history)
+                average_velocity = sorted_velocities[
+                    len(sorted_velocities) // 2
+                ]
+
+                # ---------------------------------------------
+                # EXPONENTIAL VELOCITY SMOOTHING
+                # ---------------------------------------------
+
+                smoothed_hand_velocity = (
+                    VELOCITY_ALPHA
                     *
-                    raw_volume
-
+                    average_velocity
                     +
-
-                    (1 - VOLUME_ALPHA)
+                    (1 - VELOCITY_ALPHA)
                     *
-                    smoothed_volume
+                    smoothed_hand_velocity
                 )
 
+                # ---------------------------------------------
+                # HAND SPEED
+                # ---------------------------------------------
+
+                hand_speed = abs(smoothed_hand_velocity)
+
+                # ---------------------------------------------
+                # TARGET SEEK RATE
+                # ---------------------------------------------
+
+                if hand_speed < MIN_SPEED:
+                    target_seek_rate = 0.0
+                else:
+                    normalized_speed = (
+                        hand_speed
+                        -
+                        MIN_SPEED
+                    ) / (
+                        MAX_SPEED
+                        -
+                        MIN_SPEED
+                    )
+                    normalized_speed = max(
+                        0.0,
+                        min(1.0, normalized_speed)
+                    )
+
+                    speed_curve = (
+                        normalized_speed
+                        **
+                        SEEK_POWER
+                    )
+
+                    if smoothed_hand_velocity > 0:
+                        direction = 1.0
+                    else:
+                        direction = -1.0
+
+                    target_seek_rate = (
+                        direction
+                        *
+                        speed_curve
+                        *
+                        MAX_SEEK_RATE
+                    )
+
+                # ---------------------------------------------
+                # SMOOTH SEEK RATE
+                # ---------------------------------------------
+
+                direction_changed = (
+                    smoothed_seek_rate != 0
+                    and target_seek_rate != 0
+                    and (
+                        (smoothed_seek_rate > 0 and target_seek_rate < 0)
+                        or (smoothed_seek_rate < 0 and target_seek_rate > 0)
+                    )
+                )
+
+                if direction_changed:
+                    smoothed_seek_rate *= 0.20
+
+                if abs(target_seek_rate) > MIN_SEEK_RATE:
+                    smoothed_seek_rate += (
+                        target_seek_rate
+                        -
+                        smoothed_seek_rate
+                    ) * SEEK_ACCELERATION
+                else:
+                    smoothed_seek_rate *= MOMENTUM_DECAY
+                    if abs(smoothed_seek_rate) < MIN_SEEK_RATE:
+                        smoothed_seek_rate = 0.0
+
+                smoothed_seek_rate = max(
+                    -MAX_SEEK_RATE,
+                    min(MAX_SEEK_RATE, smoothed_seek_rate)
+                )
+
+                if at_video_end and smoothed_seek_rate > 0:
+                    smoothed_seek_rate = 0.0
+                if at_video_start and smoothed_seek_rate < 0:
+                    smoothed_seek_rate = 0.0
+
+                # ---------------------------------------------
+                # VLC UPDATE
+                # ---------------------------------------------
+
+                current_real_time = time.time()
+                time_since_last_seek = (
+                    current_real_time
+                    -
+                    last_seek_update
+                )
+
+                # Keep target synced with current playback position when hand is not moving
+                if abs(smoothed_seek_rate) < MIN_SEEK_RATE:
+                    current_time_ms = player.get_time()
+                    if current_time_ms >= 0:
+                        target_time_ms = float(current_time_ms)
+                elif time_since_last_seek >= SEEK_UPDATE_INTERVAL:
+
+                    if target_time_ms is None:
+                        current_time_ms = player.get_time()
+                        if current_time_ms >= 0:
+                            target_time_ms = float(current_time_ms)
+
+                    video_length_ms = player.get_length()
+
+                    if target_time_ms is not None and video_length_ms > 0:
+                        seek_delta_ms = (
+                            smoothed_seek_rate
+                            *
+                            time_since_last_seek
+                            *
+                            1000
+                        )
+
+                        if abs(seek_delta_ms) >= MIN_SEEK_DELTA_MS:
+                            target_time_ms += seek_delta_ms
+
+                            if target_time_ms >= video_length_ms:
+                                target_time_ms = float(video_length_ms)
+                                smoothed_seek_rate = 0.0
+                                if not at_video_end:
+                                    print("Reached VIDEO END")
+                                at_video_end = True
+                            elif target_time_ms <= 0:
+                                target_time_ms = 0.0
+                                smoothed_seek_rate = 0.0
+                                if not at_video_start:
+                                    print("Reached VIDEO START")
+                                at_video_start = True
+                            else:
+                                at_video_start = False
+                                at_video_end = False
+
+                            player.set_time(int(target_time_ms))
+
+                    last_seek_update = current_real_time
+
+            else:
+
+                # Reset seeking state whenever not in two_finger gesture
+                smoothed_index_x = None
+                previous_index_x = None
+                previous_sample_time = None
+                velocity_history.clear()
+                smoothed_hand_velocity = 0.0
+                smoothed_seek_rate = 0.0
+                target_time_ms = None
+                at_video_start = False
+                at_video_end = False
+                last_seek_update = time.time()
 
             # =================================================
-            # WINDOWS VOLUME
+            # VOLUME CONTROL (OPEN HAND ONLY)
             # =================================================
 
-            current_volume_time = (
-                time.time()
-            )
+            if stable_prediction == "open":
 
+                pinch_distance = distance_3d(
+                    thumb_tip,
+                    index_tip
+                )
 
-            if (
+                if hand_size > 0:
+                    normalized_pinch_distance = (
+                        pinch_distance
+                        /
+                        hand_size
+                    )
+                else:
+                    normalized_pinch_distance = 0.0
 
-                current_volume_time
-                -
-                last_volume_update
-
-                >=
-
-                VOLUME_UPDATE_INTERVAL
-
-            ):
-
-                windows_volume = (
-                    smoothed_volume
+                raw_volume = (
+                    (
+                        normalized_pinch_distance
+                        -
+                        MIN_PINCH_RATIO
+                    )
                     /
-                    100.0
+                    (
+                        MAX_PINCH_RATIO
+                        -
+                        MIN_PINCH_RATIO
+                    )
+                ) * 100
+
+                raw_volume = max(
+                    0,
+                    min(
+                        100,
+                        raw_volume
+                    )
                 )
 
+                if smoothed_volume is None:
+                    smoothed_volume = raw_volume
+                else:
+                    smoothed_volume = (
+                        VOLUME_ALPHA
+                        *
+                        raw_volume
+                        +
+                        (1 - VOLUME_ALPHA)
+                        *
+                        smoothed_volume
+                    )
 
-                volume_control.SetMasterVolumeLevelScalar(
+                current_volume_time = time.time()
 
-                    windows_volume,
-
-                    None
-                )
-
-
-                last_volume_update = (
+                if (
                     current_volume_time
-                )
+                    -
+                    last_volume_update
+                    >=
+                    VOLUME_UPDATE_INTERVAL
+                ):
+                    windows_volume = (
+                        smoothed_volume
+                        /
+                        100.0
+                    )
+
+                    volume_control.SetMasterVolumeLevelScalar(
+                        windows_volume,
+                        None
+                    )
+
+                    last_volume_update = current_volume_time
 
 
             # =================================================
@@ -1555,10 +1161,16 @@ with HandLandmarker.create_from_options(
             bar_height = 30
 
 
+            current_vol_disp = (
+                smoothed_volume
+                if smoothed_volume is not None
+                else 0.0
+            )
+
             filled_width = int(
 
                 (
-                    smoothed_volume
+                    current_vol_disp
                     /
                     100
                 )
@@ -1611,7 +1223,7 @@ with HandLandmarker.create_from_options(
 
                 frame,
 
-                f"Volume: {smoothed_volume:.0f}%",
+                f"Volume: {current_vol_disp:.0f}%",
 
                 (20, 70),
 
@@ -1773,34 +1385,32 @@ with HandLandmarker.create_from_options(
             # SEEK STATUS
             # =================================================
 
-            if (
-                smoothed_seek_rate
-                >
-                0.5
-            ):
-
-                seek_status = (
-
-                    "SEEK RIGHT -> "
-                    f"{smoothed_seek_rate:.1f} sec/s"
-                )
-
-            elif (
-                smoothed_seek_rate
-                <
-                -0.5
-            ):
-
-                seek_status = (
-
-                    "<- SEEK LEFT "
-                    f"{abs(smoothed_seek_rate):.1f} sec/s"
-                )
-
+            if stable_prediction == "two_finger":
+                if (
+                    smoothed_seek_rate
+                    >
+                    0.5
+                ):
+                    seek_status = (
+                        "SEEK RIGHT -> "
+                        f"{smoothed_seek_rate:.1f} sec/s"
+                    )
+                elif (
+                    smoothed_seek_rate
+                    <
+                    -0.5
+                ):
+                    seek_status = (
+                        "<- SEEK LEFT "
+                        f"{abs(smoothed_seek_rate):.1f} sec/s"
+                    )
+                else:
+                    seek_status = (
+                        "SEEK: READY (Move hand)"
+                    )
             else:
-
                 seek_status = (
-                    "SEEK: STOPPED"
+                    "SEEK: INACTIVE"
                 )
 
 
@@ -1938,6 +1548,8 @@ with HandLandmarker.create_from_options(
                 time.time()
             )
 
+            is_seeking = False
+
 
             # ------------------------------------------------
             # VOLUME RESET
@@ -1975,7 +1587,7 @@ with HandLandmarker.create_from_options(
             (
                 "Fist = Pause | "
                 "Open = Play | "
-                "Index = Seek | "
+                "2 Fingers = Seek | "
                 "Q = Quit"
             ),
 
@@ -2017,7 +1629,7 @@ with HandLandmarker.create_from_options(
 
 
 # ============================================================
-# CLEANUP
+# CLEANUP                                                    #
 # ============================================================
 
 camera.release()

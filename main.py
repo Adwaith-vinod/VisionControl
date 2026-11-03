@@ -278,7 +278,7 @@ with HandLandmarker.create_from_options(options) as landmarker:
         # Display controls
         cv2.putText(
             frame,
-            "F=Fist  O=Open  S=Start/Stop  Q=Quit",
+            "F=Fist  O=Open  T=Two Fingers  S=Start/Stop  Q=Quit",
             (20, 460),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
@@ -314,12 +314,20 @@ with HandLandmarker.create_from_options(options) as landmarker:
             print("Selected gesture: OPEN")
 
 
+        # Select two fingers
+        elif key == ord("t") or key == ord("2"):
+
+            current_label = "two_finger"
+
+            print("Selected gesture: TWO FINGERS")
+
+
         # Start / stop collection
         elif key == ord("s"):
 
             if current_label is None:
 
-                print("Select a gesture first: F or O")
+                print("Select a gesture first: F, O, or T")
 
             else:
 
